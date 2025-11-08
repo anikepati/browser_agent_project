@@ -6,12 +6,17 @@ class ScriptPreprocessor:
     @staticmethod
     def preprocess(script, task_item):
         logger = setup_logging()
+        if not isinstance(task_item, dict):
+            raise ValueError("task_item must be a dictionary")
         try:
             updated_script = json.loads(json.dumps(script))  # Deep copy
             # Inject current date for form-filling
             task_item['current_date'] = AppConfig.CURRENT_DATE
             for action in updated_script['actions']:
-                for key, value in action.get('parameters', {}).items():
+                params = action.get('parameters', {})
+                if not isinstance(params, dict):
+                    continue
+                for key, value in params.items():
                     if isinstance(value, str) and value.startswith('{{') and value.endswith('}}'):
                         param_path = value[2:-2].split('.')
                         current = task_item
