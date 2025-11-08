@@ -1,0 +1,81 @@
+from google.adk.agents import LlmAgent
+from mcp_manager import MCPManager
+from config import AppConfig
+from logging_setup import setup_logging
+from callbacks import before_cb, after_cb
+
+logger = setup_logging()
+
+async def initialize_root_agent():
+    mcp = MCPManager()
+    toolset = await mcp.start()  # Returns MCPToolset
+    try:
+        reference_script = """
+# Reference Playwright script for guidance:
+async function test() {
+  // Read test data from Excel file
+  const testData = readExcelData('./test-data.xlsx') as any[];
+  const data = testData[0]; // Use first row of data
+  console.log('Using data', data);
+  await page.goto('https://admin.powerplatform.microsoft.com/');
+  await page.getByRole('textbox', { name: 'Enter your email or phone' }).click();
+  await page.getByRole('textbox', { name: 'Enter your email or phone' }).fill('abc@vcf.com');
+  // Pause for manual MFA entry so the browser does not close
+  await page.pause();
+  await page.getByRole('button', { name: 'Next' }).click();
+  await page.waitForURL('**/home');
+  await page.getByRole('tab', { name: 'Manage users, environments,' }).click();
+  await page.getByRole('link', { name: 'Power Platform' }).click();
+  await page.getByRole('link', { name: 'See all Business units' }).click();
+  await page.getByRole('menuitem', { name: 'New business unit' }).click();
+  await page.getByRole('textbox', { name: 'Name *' }).click();
+  await page.getByRole('textbox', { name: 'Name *' }).fill(data['Child Business Unit']);
+  await page.getByRole('button', { name: 'Save' }).click();
+  await page.getByRole('menuitem', { name: 'New business unit' }).click();
+  await page.getByRole('textbox', { name: 'Name *' }).click();
+  await page.getByRole('textbox', { name: 'Name *' }).fill('New Business Unit');
+  await page.getByRole('textbox', { name: 'Parent Business Unit' }).click();
+  await page.getByRole('button', { name: 'Save' }).click();
+  await page.getByRole('combobox', { name: 'Parent business unit dropdown' }).press('CapsLock');
+  await page.getByRole('combobox', { name: 'Parent business unit dropdown' }).fill('O2A BU PARENT TS1');
+  await page.getByRole('option', { name: 'O2A BU PARENT TS1' }).click();
+  await page.getByRole('button', { name: 'Save' }).click();
+} catch (error) {
+  console.log('Test Failed', error);
+  await page.pause(); // Keep browser open for debugging
+}
+}
+        """
+        instruction = (
+            "You are an expert web automation agent for Power Platform tasks. "
+            "You can navigate to web pages, take screenshots, fill forms, and click elements. "
+            "When asked to interact with a web page (e.g., fill business unit form with task_item data on current date), use the appropriate browser tools. "
+            "Handle UI variations with vision (e.g., snapshot then click_xy). "
+            "If you don't know something, you can always google it using the browser tools. "
+            "Use the provided full_script as a guide for steps. "
+            "For login, pause or handle MFA if needed, but simulate with tools. "
+            "Retry on failures. "
+            f"Reference example script for business unit creation: {reference_script}"
+        )
+        root_agent = LlmAgent(
+            model=AppConfig.LLM_MODEL,
+            name='playwright_automator_agent',
+            description="Single agent for browser automation on Power Platform",
+            instruction=instruction,
+            tools=[toolset],
+            tool_filter=['browser_navigate', 'browser_screenshot', 'browser_fill', 'browser_click'],  # Limit to essentials
+            generate_content_config=AppConfig.GENERATE_CONFIG,
+            before_agent_callback=before_cb,
+            after_agent_callback=after_cb
+        )
+        logger.info("Single root agent initialized with MCP tools and reference script.")
+        return root_agent, mcp
+    except Exception as e:
+        logger.error(f"Root agent init error: {str(e)}")
+        raise
+
+real_data = {
+            "email": "bh.kj@hjjk.vom",  # From reference
+            "child_business_unit": "New Business Unit",  # From reference
+            "parent_business_unit": "O2A BU PARENT TS1"  # From reference
+        }
