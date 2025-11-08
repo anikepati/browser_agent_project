@@ -10,11 +10,11 @@ from agent import initialize_root_agent  # Imports root setup
 
 async def main(inputs):
     logger = setup_logging()
-    root_agent, mcp = await initialize_root_agent()
     try:
+        root_agent, mcp = await initialize_root_agent()  # Initializes the Sequential workflow as root_agent
         session_service, artifact_service = setup_services()
         
-        # Use Runner for batch execution (ADK compatible)
+        # Use Runner for batch execution (ADK compatible), passing the root_agent (workflow)
         runner = Runner(workflow=root_agent, session_service=session_service, artifact_service=artifact_service)
         
         preprocessed_script = ScriptPreprocessor.preprocess(FULL_SCRIPT, inputs.get('task_item', {}))
@@ -27,7 +27,7 @@ async def main(inputs):
         app = AdkApp(agent=root_agent, session_service_builder=lambda: session_service)
         session = await app.async_create_session(user_id="default_user")
         async for event in app.async_stream_query(user_id="default_user", session_id=session.id, message=json.dumps(inputs)):
-            logger.info(f"Stream event: {event}")
+            logger.json_log(f"Stream event: {event}", extra={"event_type": type(event).__name__})
         
         return result
     except Exception as e:
