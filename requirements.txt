@@ -1,3 +1,4 @@
 google-cloud-aiplatform
 vertexai
 python-dotenv
+sqlalchemy
