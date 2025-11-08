@@ -20,6 +20,7 @@ class AppConfig:
     ARTIFACT_DIR = "./artifacts"
     LOG_FILE = 'adk_browser_agent.log'
     CURRENT_DATE = os.getenv('CURRENT_DATE', "November 07, 2025")
+    DB_PATH = os.path.join(ARTIFACT_DIR, 'artifacts.db')  # New: Path for SQLite DB
     
     # ADK best practices: Safety and generation config
     SAFETY_SETTINGS = [
