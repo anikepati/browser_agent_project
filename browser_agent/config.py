@@ -10,17 +10,18 @@ class AppConfig:
     MCP_PARAMS = StdioConnectionParams(
         server_params=StdioServerParameters(
             command='npx',
-            args=["@playwright/mcp@latest", "--port", "8931", "--caps=vision", "--headless", "--browser", "chromium"]
+            args=["@playwright/mcp@latest", "--port", "8931", "--caps=vision", "--headless" if os.getenv('ENV_MODE', 'dev') == 'prod' else "", "--browser", "chromium"]
         )
     )
     LLM_MODEL = os.getenv('LLM_MODEL', "gemini-1.5-flash")
-    MAX_RETRIES = 3
-    BACKOFF_FACTOR = 2
-    TIMEOUT_MS = 20000
-    ARTIFACT_DIR = "./artifacts"
-    LOG_FILE = 'adk_browser_agent.log'
+    MAX_RETRIES = int(os.getenv('MAX_RETRIES', 3))
+    BACKOFF_FACTOR = int(os.getenv('BACKOFF_FACTOR', 2))
+    TIMEOUT_MS = int(os.getenv('TIMEOUT_MS', 20000))
+    ARTIFACT_DIR = os.getenv('ARTIFACT_DIR', "./artifacts")
+    LOG_FILE = os.getenv('LOG_FILE', 'adk_browser_agent.log')
     CURRENT_DATE = os.getenv('CURRENT_DATE', "November 07, 2025")
-    DB_PATH = os.path.join(ARTIFACT_DIR, 'artifacts.db')  # New: Path for SQLite DB
+    DB_PATH = os.path.join(ARTIFACT_DIR, 'artifacts.db')  # Path for SQLite DB
+    ENV_MODE = os.getenv('ENV_MODE', 'dev')  # New: dev/prod for configs like headless
     
     # ADK best practices: Safety and generation config
     SAFETY_SETTINGS = [
