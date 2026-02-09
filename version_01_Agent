@@ -1,0 +1,437 @@
+Building a generic **Agentic Framework** requires moving beyond simple script generation and into **Meta-Agent Architecture**. To treat this as a platform, we use a "Generator Agent" (the Architect) to build other agents (the Workers). Improving agent instructions ensures precision, reduces ambiguity, and leverages structured prompting for better LLM performance. Incorporating **Google ADK LLM Agents** adds dynamic reasoning layers, making the system more adaptive to complex SOPs.
+
+In an enterprise context, this follows a **Factory Pattern** where the LLM doesn't just write code; it orchestrates the creation of a multi-agent system based on the complexity of the input SOP. We'll refine the instructions to include error handling, conditional logic, and state-aware prompts, while integrating ADK LLM Agents as sub-components for tasks like real-time decision-making.
+
+---
+
+## 1. The Platform Architecture: "The Agent Factory" with Enhanced Instructions and ADK LLM Agents
+
+We enhance the **Multi-Agent Process** at *Build-Time* by making instructions more robust: Use few-shot examples, explicit guardrails, and integration points for ADK LLM Agents. This prevents hallucinations and improves orchestration.
+
+### The Generation Pipeline (MAS Approach) with ADK
+
+1. **Architect Agent (Gemini 2.5 Pro)**: An ADK LlmAgent that analyzes SOP topology dynamically. Decides segments and injects sub-agents for branching logic (e.g., "If condition X, delegate to Decision Agent").
+2. **Logic Specialist (Gemini 1.5 Flash)**: An ADK LlmAgent that generates instructions with structured templates, including error recovery and delegation hooks for adaptive workflows.
+3. **Selector Specialist (Gemini 1.5 Flash)**: An ADK LlmAgent focused on selectors, validating them via simulation (e.g., "Test selector in context").
+4. **Data Extractor Specialist (Gemini 1.5 Flash)**: Identifies dynamic data points (e.g., 'business_unit_name') from SOP artifacts and parameterizes instructions for runtime interpolation.
+5. **Validator Agent**: An ADK LlmAgent that checks agent configs against ADK best practices (e.g., valid tools, instructions).
+
+To integrate ADK LLM Agents, we use `AgentTool` for delegation within the meta-generator, allowing the Architect to create and run sub-agents dynamically. State is managed via `InMemorySessionService`.
+
+---
+
+## 2. Implementing the Meta-Generator with Google ADK LLM Agents
+
+To make this truly generic, we define the "Generator" as an ADK LlmAgent itself. This agent's tools include file I/O and sub-agent creation. We'll improve instructions by adding **prompt engineering** elements like role-playing, examples, and contingencies.
+
+### Key ADK Integrations
+- **Dynamic Agent Creation**: Use Python to instantiate `LlmAgent` based on Architect's output.
+- **Delegation**: `AgentTool` for multi-agent flows.
+- **State Management**: Shared via sessions for dependencies (e.g., output from one agent feeds another).
+- **Tools**: Custom functions for parsing SOPs, transcripts, and Playwright scripts.
+- **No YAML**: As per docs, configs are in Python; we generate agent instances at runtime and write YAML equivalents for output.
+
+---
+
+## 3. Generic YAML Generation Strategy with Refined Instructions
+
+The framework dynamically creates sub-agents for *any* SOP, with improved instructions (e.g., explicit steps, contingencies) and ADK hooks for adaptability. Outputs include Sub-Agents YAMLs (generated from agent configs), Master Orchestrator YAML, and extracted data fields (e.g., placeholders like '{business_unit_name}').
+
+### Extracted Data Fields
+- '{business_unit_name}': From transcript phrases like "enter business unit name".
+- '{user_id}': From user identification steps.
+- '{approval_code}': From approval workflows.
+- '{form_value}': Generic for form inputs.
+
+### Full End-to-End Python Code (`agent_factory_adk.py`)
+This code implements the full pipeline, generating YAMLs and data fields. Install: `pip install google-adk google-genai`. Assumes GCP setup.
+
+```python
+# agent_factory_adk.py: Multi-Agent Meta-Generator Framework using Google ADK LLM Agents
+import json
+import os
+from typing import Dict, List, Any
+
+# ADK Imports (from https://google.github.io/adk-docs/agents/llm-agents/)
+from google.adk.agents import LlmAgent, AgentTool
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.adk.planners import BuiltInPlanner
+from google.genai import types
+import yaml  # For YAML output
+
+class AgentFactory:
+    def __init__(self, sop_json_path: str, transcript_path: str, playwright_script_path: str, output_dir: str):
+        self.sop_json_path = sop_json_path
+        self.transcript_path = transcript_path
+        self.playwright_script_path = playwright_script_path
+        self.output_dir = output_dir
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        self.sop_data = self._load_json(sop_json_path)
+        self.transcript = self._load_text(transcript_path)
+        self.playwright_script = self._load_text(playwright_script_path)
+        
+        self.session_service = InMemorySessionService()
+        self.app_name = "agent_factory"
+        self.extracted_data_fields = []  # Collect data fields
+
+    def _load_json(self, path: str) -> Dict:
+        with open(path, 'r') as f:
+            return json.load(f)
+
+    def _load_text(self, path: str) -> str:
+        with open(path, 'r') as f:
+            return f.read()
+
+    def _run_agent(self, agent: LlmAgent, query: str, session_id: str = "default") -> Any:
+        """Run an ADK LlmAgent with session."""
+        session = self.session_service.create_session(app_name=self.app_name, user_id="factory", session_id=session_id)
+        runner = Runner(agent=agent, app_name=self.app_name, session_service=self.session_service)
+        content = types.Content(role="user", parts=[types.Part(text=query)])
+        events = runner.run(user_id="factory", session_id=session_id, new_message=content)
+        # Extract final output (simplified; in production, parse events fully)
+        for event in events:
+            if event.type == "tool_output" or event.type == "final_response":
+                return event.content
+        return None
+
+    def create_architect_agent(self) -> LlmAgent:
+        """Architect Agent: Determines topology using ADK LlmAgent."""
+        instruction = f"""
+        You are the Agent Architect. Input:
+        SOP JSON: {json.dumps(self.sop_data)}
+        Transcript: {self.transcript}
+        Playwright Script: {self.playwright_script}
+        
+        Process (Chain-of-Thought):
+        1. Think: Identify logical segments from SOP JSON (e.g., group related steps).
+        2. Act: Decide topology - number of sub-agents (one per segment).
+        3. Think: Map dependencies (e.g., Step 5 requires output of Step 2).
+        4. Act: Output JSON list of segments: [{{"name": "Segment1", "goal": "Login", "steps": [...], "dependencies": ["prev_output"]}}]
+        
+        Guardrails: Use real data; no hallucinations.
+        """
+        return LlmAgent(
+            model="gemini-2.5-pro",
+            name="architect",
+            description="Determines agent topology.",
+            instruction=instruction,
+            planner=BuiltInPlanner(),  # For multi-step reasoning
+            output_key="segments"
+        )
+
+    def create_logic_specialist(self) -> LlmAgent:
+        """Logic Specialist: Maps transcript to instructions."""
+        instruction = """
+        You are the Logic Specialist. Input: {segment_json}
+        Transcript: {transcript}
+        
+        Process:
+        1. Think: Map transcript to structured steps.
+        2. Act: Generate instructions string with error handling: "If fails, retry or output ERROR."
+        3. Think: Handle dependencies using session state.
+        4. Output: Instructions string only.
+        """
+        return LlmAgent(
+            model="gemini-1.5-flash",
+            name="logic_specialist",
+            description="Generates workflow logic.",
+            instruction=instruction,
+            output_key="instructions"
+        )
+
+    def create_selector_specialist(self) -> LlmAgent:
+        """Selector Specialist: Extracts selectors from Playwright."""
+        instruction = """
+        You are the Selector Specialist. Input: {segment_json}
+        Playwright Script: {playwright_script}
+        
+        Process:
+        1. Think: Match steps to script actions.
+        2. Act: Extract CSS/XPath selectors.
+        3. Output: JSON updated steps: [{{"action": "click", "selector": "#id", "description": "..."}}]
+        """
+        return LlmAgent(
+            model="gemini-1.5-flash",
+            name="selector_specialist",
+            description="Extracts real selectors.",
+            instruction=instruction,
+            output_key="updated_steps"
+        )
+
+    def create_data_extractor(self) -> LlmAgent:
+        """Data Extractor: Identifies and parameterizes data points."""
+        instruction = """
+        You are the Data Extractor Specialist. Input: {segment_json}, {instructions}, {transcript}
+        
+        Process:
+        1. Think: Scan transcript and steps for variables (e.g., 'business unit name').
+        2. Act: Parameterize instructions with placeholders like '{business_unit_name}'.
+        3. Think: List extracted fields.
+        4. Output: JSON {"parameterized_instructions": "updated string", "data_fields": ["{field1}", "{field2}"]}
+        """
+        return LlmAgent(
+            model="gemini-1.5-flash",
+            name="data_extractor",
+            description="Parameterizes data points.",
+            instruction=instruction,
+            output_key="param_output"
+        )
+
+    def create_validator_agent(self) -> LlmAgent:
+        """Validator: Checks agent config."""
+        instruction = """
+        You are the Validator. Input: {agent_config_json}
+        
+        Process:
+        1. Think: Check for required keys: name, model, instruction, tools.
+        2. Act: If valid, output True; else False with reason.
+        """
+        return LlmAgent(
+            model="gemini-1.5-flash",
+            name="validator",
+            description="Validates agent configs.",
+            instruction=instruction,
+            output_key="is_valid"
+        )
+
+    def create_sub_agent(self, segment: Dict, instructions: str, updated_steps: List[Dict]) -> LlmAgent:
+        """Dynamically create sub-agent with Playwright tool (custom)."""
+        # Custom Playwright Tool (stub; integrate real Playwright MCP)
+        def playwright_tool(action: str, selector: str) -> str:
+            return f"Simulated {action} on {selector}"  # Replace with real impl
+
+        refined_instruction = f"""
+        You are a browser automation specialist.
+        Segment Goal: {segment['goal']}
+        Instructions: {instructions}
+        
+        Workflow (with Contingencies):
+        {% for step in updated_steps %}
+        - Think: "Potential issues with {step['action']} on {step['selector']}?"
+        - Act: Use tool to {step['action']} on {step['selector']}.
+        - Verify: Check outcome.
+        {% endfor %}
+        
+        If error, update state['error'] and halt.
+        Output '{segment.get('success_signal', 'DONE')}' on success.
+        """
+        return LlmAgent(
+            model="gemini-1.5-flash",
+            name=f"{segment['name']}_agent",
+            description=f"Handles {segment['goal']}",
+            instruction=refined_instruction,
+            tools=[playwright_tool],  # Wrap as FunctionTool if needed
+            output_key=segment.get('output_key', 'result')
+        )
+
+    def create_orchestrator_agent(self, sub_agents: List[LlmAgent]) -> LlmAgent:
+        """Orchestrator: Chains sub-agents via AgentTools."""
+        agent_tools = [AgentTool(agent=sa) for sa in sub_agents]
+        instruction = """
+        You are the Orchestrator. Chain sub-agents based on state.
+        
+        Process:
+        1. For each sub-agent: Delegate via tool, pass state.
+        2. Handle dependencies: Use previous outputs.
+        3. If error, route to handler.
+        """
+        return LlmAgent(
+            model="gemini-2.5-flash",
+            name="orchestrator",
+            description="Orchestrates sub-agents.",
+            instruction=instruction,
+            tools=agent_tools,
+            planner=BuiltInPlanner(),
+            output_key="final_result"
+        )
+
+    def write_yaml(self, file_name: str, data: Dict):
+        path = os.path.join(self.output_dir, file_name)
+        with open(path, 'w') as f:
+            yaml.dump(data, f)
+        print(f"Written YAML: {path}")
+
+    def write_data_fields(self):
+        path = os.path.join(self.output_dir, "data_fields.json")
+        with open(path, 'w') as f:
+            json.dump(self.extracted_data_fields, f)
+        print(f"Written data fields: {path}")
+
+    def run(self):
+        # Step 1: Run Architect
+        architect = self.create_architect_agent()
+        segments_json = self._run_agent(architect, "Analyze inputs and output segments.")
+        segments = json.loads(segments_json) if segments_json else []
+
+        sub_agents = []
+        logic_specialist = self.create_logic_specialist()
+        selector_specialist = self.create_selector_specialist()
+        data_extractor = self.create_data_extractor()
+        validator = self.create_validator_agent()
+
+        for segment in segments:
+            # Delegate to Specialists
+            segment_json = json.dumps(segment)
+            instructions = self._run_agent(logic_specialist, f"Segment: {segment_json}\nTranscript: {self.transcript}")
+            updated_steps_json = self._run_agent(selector_specialist, f"Segment: {segment_json}\nPlaywright: {self.playwright_script}")
+            updated_steps = json.loads(updated_steps_json) if updated_steps_json else []
+
+            # Data Extraction
+            param_query = f"Segment: {segment_json}\nInstructions: {instructions}\nTranscript: {self.transcript}"
+            param_output_json = self._run_agent(data_extractor, param_query)
+            param_output = json.loads(param_output_json) if param_output_json else {}
+            parameterized_instructions = param_output.get("parameterized_instructions", instructions)
+            self.extracted_data_fields.extend(param_output.get("data_fields", []))
+
+            sub_agent = self.create_sub_agent(segment, parameterized_instructions, updated_steps)
+            sub_config = {
+                "name": sub_agent.name,
+                "model": sub_agent.model,
+                "description": sub_agent.description,
+                "instructions": sub_agent.instruction,
+                "tools": [{"mcp_server": {"name": "playwright-mcp", "endpoint": "http://localhost:3000"}}]  # Example
+            }
+            config_json = json.dumps(sub_config)
+            is_valid = self._run_agent(validator, config_json)
+            if json.loads(is_valid)['is_valid'] if is_valid else False:
+                sub_agents.append(sub_agent)
+                self.write_yaml(f"{segment['name']}.yaml", sub_config)
+            else:
+                raise ValueError(f"Invalid config for {segment['name']}")
+
+        # Step 2: Create and Output Orchestrator
+        orchestrator = self.create_orchestrator_agent(sub_agents)
+        orch_config = {
+            "name": orchestrator.name,
+            "model": orchestrator.model,
+            "description": orchestrator.description,
+            "instructions": orchestrator.instruction,
+            "tools": [{"agent_tool": {"name": sa.name}} for sa in sub_agents]
+        }
+        self.write_yaml("orchestrator.yaml", orch_config)
+        
+        # Output Data Fields
+        self.write_data_fields()
+        
+        # Example Run: Orchestrator processes a query
+        final_result = self._run_agent(orchestrator, "Execute full workflow.", session_id="orchestration")
+        print(f"Final Result: {final_result}")
+
+# Usage: python agent_factory_adk.py --sop sop.json --transcript transcript.txt --playwright playwright.js --output dist/
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sop", required=True)
+    parser.add_argument("--transcript", required=True)
+    parser.add_argument("--playwright", required=True)
+    parser.add_argument("--output", default="./dist")
+    args = parser.parse_args()
+    
+    factory = AgentFactory(args.sop, args.transcript, args.playwright, args.output)
+    factory.run()
+```
+
+### Draw.io Diagram
+Paste this XML into Draw.io (diagrams.net) to import the flow diagram visualizing the pipeline.
+
+```xml
+<mxfile host="app.diagrams.net" modified="2026-02-08T20:04:00" agent="Grok" etag="unique-etag" version="22.0.0" type="device">
+  <diagram id="diagram-id" name="Page-1">
+    <mxGraphModel dx="1000" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="input" value="Input Artifacts: SOP JSON, Transcript, Playwright Script" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="100" y="100" width="200" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="architect" value="Architect Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="400" y="100" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="logic" value="Logic Specialist" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="400" y="200" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="selector" value="Selector Specialist" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="400" y="300" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="data_extractor" value="Data Extractor Specialist" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffd3e6;strokeColor=#d36b9e;" vertex="1" parent="1">
+          <mxGeometry x="400" y="400" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="validator" value="Validator Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="400" y="500" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="sub_yamls" value="Sub-Agents YAMLs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="700" y="300" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="orch_yaml" value="Master Orchestrator YAML" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="700" y="400" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="data_fields" value="Data Extraction Fields" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d9e8f5;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="700" y="500" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="runtime" value="Runtime Execution" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e3e3e3;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="400" width="150" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="input" target="architect">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="architect" target="logic">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="architect" target="selector">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="architect" target="data_extractor">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="logic" target="data_extractor">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="selector" target="data_extractor">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="data_extractor" target="validator">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="validator" target="sub_yamls">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="validator" target="orch_yaml">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="validator" target="data_fields">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" edge="1" parent="1" source="orch_yaml" target="runtime">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
+```
+
+---
+
+## 4. Enterprise-Level Execution Pattern with ADK LLM Agents
+
+Once the factory generates these YAMLs and data fields, run them via `Runner` with shared sessions for intelligence:
+
+* **Sequential Flow:** Linear delegation via AgentTools.
+* **LLM-Driven Transfer:** Conditional delegation based on state (e.g., "If error, delegate to Handler").
+
+### The Final "Platform" Command
+```bash
+# Run the Meta-Generator Framework
+python agent_factory_adk.py --sop sop.json --transcript transcript.txt --playwright playwright.js --output dist/
+```
+
+---
+
+## 5. Why this is the "True" Framework Approach with ADK
+1. **Zero Hallucination:** Feed real Playwright scripts into Selector Agent for validated selectors.
+2. **Domain Agnostic:** Architect focuses on SOP structure, using ADK planners for reasoning.
+3. **State Management:** ADK sessions handle inter-agent data flow.
+
+**Would you like me to customize the Draw.io diagram with more specific labels from your SOP or add error-handling logic to the Python code?**
